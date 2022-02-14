@@ -2,10 +2,11 @@ package YAOO;
 use strict; no strict 'refs';
 use warnings;
 use Carp qw/croak/; use Tie::IxHash;
+use feature qw/state/;
+use Blessed::Merge;
+our $VERSION = '0.04';
 
-our $VERSION = '0.01';
-
-our (%object, %TYPES);
+our (%TYPES, %object);
 
 sub make_keyword {
 	my ($called, $key, $cb) = @_;
@@ -14,8 +15,9 @@ sub make_keyword {
 
 sub import {
 	my ($package, @attributes) = @_;
+
 	my $called = caller();
-	
+
 	for my $is (qw/ro rw/) {
 		make_keyword($called, $is, sub { is => $is });
 	}
@@ -27,13 +29,13 @@ sub import {
 		});
 	}
 
-	for my $isa ( qw/any scalar scalarref integer float boolean ordered_hash hash array object fh/ ) {
-		make_keyword($called, $isa, sub { 
+	for my $isa ( qw/any string scalarref integer float boolean ordered_hash hash array object fh/ ) {
+		make_keyword($called, $isa, sub {
 			my (@args) = @_;
 			my @return = (
-				\&{"${package}::${isa}"}, 
-				type => $isa, 
-				build_default => \&{"${package}::build_${isa}"} 
+				\&{"${package}::${isa}"},
+				type => $isa,
+				build_default => \&{"${package}::build_${isa}"}
 			);
 			push @return, (default => ($isa eq 'ordered_hash' ? sub { deep_clone_ordered_hash(@args) } : sub { deep_clone( scalar @args > 1 ? $isa eq 'hash' ? {@args} : \@args : @args) }))
 				if (scalar @args);
@@ -41,14 +43,67 @@ sub import {
 		});
 	}
 
-	make_keyword($called, 'auto_build', sub { $object{auto_build} = 1; });
+	make_keyword($called, 'auto_build', sub { $object{$called}{auto_build} = 1; });
 
-	$object{has} = {};
+	make_keyword($called, 'extends', sub {
+		my ($args) = @_;
+		my $extend = caller();
+		my $bm = Blessed::Merge->new(blessed => 0, same => 0);
+		$object{$extend} = $bm->merge($object{$extend}, $object{$called});
+  		push @{*{\*{"${extend}::ISA"}}{ARRAY}}, $called;
+		for my $name (keys %{$object{$extend}{has}}) {
+			make_keyword($extend, $name, sub {
+				my ($self, $value) = @_;
+				if ($value && (
+					$object{$extend}{has}{$name}->{is} eq 'rw'
+						|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
+				)) {
+					$value = $object{$extend}{has}{$name}->{coerce}($value, $name)
+						if ($object{$extend}{has}{$name}->{coerce});
+					$object{$extend}{has}{$name}->{required}($value, $name)
+						if ($object{$extend}{$name}->{required});
+					$value = $object{$extend}{has}{$name}->{isa}($value, $name);
+					$self->{$name} = $value;
+					$object{$extend}{has}{$name}->{trigger}($value, $name)
+						if ($object{$extend}{has}{$name}->{trigger});
+				}
+				$self->{$name};
+			});
+		}
+		for my $name (keys %{$object{$extend}{method}}) {
+			make_keyword($extend, $name, $object{$called}{method}{$name});
+		}
+	});
 
-	*{"${called}::has"} = sub {
+	make_keyword($called, 'require_has', sub {
+		my (@args) = @_;
+		push @{ $object{$called}{require_has}  }, @args;
+	});
+
+	make_keyword($called, 'require_sub', sub {
+		my (@args) = @_;
+		push @{ $object{$called}{require_sub}  }, @args;
+	});
+
+	make_keyword($called, 'require_method', sub {
+		my (@args) = @_;
+		push @{ $object{$called}{require_sub}  }, @args;
+	});
+
+	$object{$called}{has} = {};
+	$object{$called}{method} = {};
+
+	make_keyword($called, "method", sub {
+		my ($name, $sub) = @_;
+
+		$object{$called}{method}{$name} = $sub;
+		make_keyword($called, $name, $sub);
+	});
+
+	make_keyword($called, 'has', sub {
 		my ($name, @attrs) = @_;
 
-		if ( $object{has}{$name} ) {
+		if ( $object{$called}{has}{$name} ) {
 			croak sprintf "%s attribute already defined for %s object.", $name, $called;
 		}
 
@@ -56,63 +111,88 @@ sub import {
 			croak sprintf "Invalid attribute definition odd number of key/value pairs (%s) passed with %s in %s object", scalar @attrs, $name, $called;
 		}
 
-		$object{has}{$name} = {@attrs};
+		$object{$called}{has}{$name} = {@attrs};
 
-		$object{has}{$name}{is} = 'rw'
-			if (! $object{has}{$name}{is});
+		$object{$called}{has}{$name}{is} = 'rw'
+			if (! $object{$called}{has}{$name}{is});
 
-		$object{has}{$name}{isa} = $TYPES{all}
-			if (not defined $object{has}{$name}{isa});
+		$object{$called}{has}{$name}{isa} = $TYPES{all}
+			if (not defined $object{$called}{has}{$name}{isa});
 
-		if ($object{has}{$name}{default}) {
-			if ($object{has}{$name}{default} =~ m/^1$/) {
-				$object{has}{$name}{value} = $object{has}{$name}{build_default}();		
-			} elsif (ref $object{has}{$name}{default} eq 'CODE') {
-				$object{has}{$name}{value} = $object{has}{$name}{default}();
+		if ($object{$called}{has}{$name}{default}) {
+			if ($object{$called}{has}{$name}{default} =~ m/^1$/) {
+				$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{build_default}();
+			} elsif (ref $object{$called}{has}{$name}{default} eq 'CODE') {
+				$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{default}();
 			} else {
-				$object{has}{$name}{value} = $object{has}{$name}{type} eq 'ordered_hash'
-					? deep_clone_ordered_hash($object{has}{$name}{default})
-					: deep_clone($object{has}{$name}{default});
+				$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{type} eq 'ordered_hash'
+					? deep_clone_ordered_hash($object{$called}{has}{$name}{default})
+					: deep_clone($object{$called}{has}{$name}{default});
 			}
 		}
-	
-		*{"${called}::$name"} = sub {
+
+		make_keyword($called, $name, sub {
 			my ($self, $value) = @_;
-			if ($value && ( 
-				$object{has}{$name}->{is} eq 'rw'
+			if ($value && (
+				$object{$called}{has}{$name}->{is} eq 'rw'
 					|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
 			)) {
-				$value = $object{has}{$name}->{coerce}($value, $name)
-					if ($object{has}{$name}->{coerce});
-				$object{has}{$name}->{required}($value, $name)
-					if ($object{$name}->{required});
-				$object{has}{$name}->{isa}($value, $name);
+				$value = $object{$called}{has}{$name}->{coerce}($value, $name)
+					if ($object{$called}{has}{$name}->{coerce});
+				$object{$called}{has}{$name}{required}($value, $name)
+					if ($object{$called}{$name}->{required});
+				$value = $object{$called}{has}{$name}{isa}($value, $name);
 				$self->{$name} = $value;
-				$object{has}{$name}->{trigger}($value, $name)
-					if ($object{has}{$name}->{trigger});
+				$object{$called}{has}{$name}{trigger}($value, $name)
+					if ($object{$called}{has}{$name}->{trigger});
 			}
 			$self->{$name};
-		};		
-	};
+		});
+	});
 
-
-	*{"${called}::new"} = sub {
+	make_keyword($called, "new", sub {
 		my ($pkg) = shift;
 		my $self = bless { }, $pkg;
-		set_defaults($self);
-		auto_build($self, @_) if ($object{auto_build});
+		require_has($called);
+		require_sub($self, $called);
+		require_method($called);
+		set_defaults($self, $called);
+		auto_build($self, @_) if ($object{$called}{auto_build});
 		$self->build(@_) if ($self->can('build'));
 		return $self;
-	};
+	});
+}
 
+sub require_has {
+	my ($called) = shift;
+	for (@{ $object{$called}{require_has} }) {
+		croak sprintf "The required %s attribute is not defined in the %s object.", $_, $called
+			if (! $object{$called}{has}{$_} );
+	}
+}
+
+sub require_sub {
+	my ($self, $called) = @_;
+	for (@{ $object{$called}{require_sub} }) {
+		croak sprintf "The required %s sub is not defined in the %s object.", $_, $called
+			if (! $self->can($_) );
+	}
+}
+
+sub require_method {
+	my ($called) = shift;
+	for (@{ $object{$called}{require_method} }) {
+		croak sprintf "The required %s method is not defined in the %s object.", $_, $called
+			if (! $object{$called}{method}{$_} );
+	}
 }
 
 sub set_defaults {
-	my ($self) = @_;
-	(defined $object{has}{$_}{value} && $self->$_($object{has}{$_}{type} eq 'ordered_hash'
-		? deep_clone_ordered_hash($object{has}{$_}{value})
-		: deep_clone($object{has}{$_}{value})
-	)) for keys %{$object{has}};	
+	my ($self, $called) = @_;
+	(defined $object{$called}{has}{$_}{value} && $self->$_($object{$called}{has}{$_}{type} eq 'ordered_hash'
+		? deep_clone_ordered_hash($object{$called}{has}{$_}{value})
+		: deep_clone($object{$called}{has}{$_}{value})
+	)) for keys %{$object{$called}{has}};
 	return $self;
 }
 
@@ -127,20 +207,20 @@ sub required {
 	my ($self, $value, $name) = @_;
 	if ( not defined $value ) {
 		croak sprintf "No defined value passed to the required %s attribute.",
-			$name; 
+			$name;
 	}
 }
 
 sub any { $_[1] }
 
-sub build_scalar { "" }
+sub build_string { "" }
 
-sub scalar {
+sub string {
 	my ($value, $name) = @_;
 	if (ref $value) {
-		croak sprintf "The value passed to the %s attribute does not match the scalar type constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the string type constraint.",
 			$name;
-	} 
+	}
 	return $value;
 }
 
@@ -149,9 +229,9 @@ sub build_integer { 0 }
 sub integer {
 	my ($value, $name) = @_;
 	if (ref $value || $value !~ m/^\d+$/) {
-		croak sprintf "The value passed to the %s attribute does not match the type constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the type constraint.",
 			$name;
-	} 
+	}
 	return $value;
 }
 
@@ -160,7 +240,7 @@ sub build_float { 0.00 }
 sub float {
 	my ($value, $name) = @_;
 	if (ref $value || $value !~ m/^\d+\.\d+$/) {
-		croak sprintf "The value passed to the %s attribute does not match the float constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the float constraint.",
 			$name;
 	}
 	return $value;
@@ -171,13 +251,25 @@ sub build_scalarref { \"" }
 sub scalarref {
 	my ($value, $name) = @_;
 	if (ref $value ne 'SCALAR' ) {
-		croak sprintf "The value passed to the %s attribute does not match the scalarref constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the scalarref constraint.",
 			$name;
 	}
 	return $value;
 }
 
 sub build_boolean { \0 }
+
+sub boolean {
+	my ($value, $name) = @_;
+	if (! ref $value) {
+		$value = \!!$value;
+	}
+	if (ref $value ne 'SCALAR' ) {
+		croak sprintf "The value passed to the %s attribute does not match the scalarref constraint.",
+			$name;
+	}
+	return $value;
+}
 
 sub build_ordered_hash { { } }
 
@@ -188,9 +280,9 @@ sub build_hash { {} }
 sub hash {
 	my ($value, $name) = @_;
 	if (ref $value ne 'HASH') {
-		croak sprintf "The value passed to the %s attribute does not match the hash type constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the hash type constraint.",
 			$name;
-	} 
+	}
 	return $value;
 }
 
@@ -199,27 +291,27 @@ sub build_array { [] }
 sub array {
 	my ($value, $name) = @_;
 	if (ref $value ne 'ARRAY') {
-		croak sprintf "The value passed to the %s attribute does not match the array type constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the array type constraint.",
 			$name;
-	} 
+	}
 	return $value;
 }
 
 sub fh {
 	my ($value, $name) = @_;
 	if (ref $value ne 'GLOB') {
-		croak sprintf "The value passed to the %s attribute does not match the glob type constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the glob type constraint.",
 			$name;
-	} 
+	}
 	return $value;
 }
 
 sub object {
 	my ($value, $name) = @_;
 	if ( ! ref $value || ref $value !~ m/SCALAR|ARRAY|HASH|GLOB/) {
-		croak sprintf "The value passed to the %s attribute does not match the object type constraint.", 
+		croak sprintf "The value passed to the %s attribute does not match the object type constraint.",
 			$name;
-	} 
+	}
 	return $value;
 
 }
@@ -252,7 +344,7 @@ YAOO - Yet Another Object Orientation
 
 =head1 VERSION
 
-Version 0.01
+Version 0.04
 
 =cut
 
@@ -265,12 +357,12 @@ Version 0.01
 	auto_build;
 
 	has moon => ro, isa(hash(a => "b", c => "d", e => [qw/1 2 3/], f => { 1 => { 2 => { 3 => 4 } } }));
-	
+
 	has stars => rw, isa(array(qw/a b c d/));
 
-	has satelites => rw, isa(integer);	
+	has satellites => rw, isa(integer);
 
-	has mental => rw, isa(ordered_hash(
+	has mind => rw, isa(ordered_hash(
 		chang => 1,
 		zante => 2,
 		oistins => 3
@@ -280,7 +372,105 @@ Version 0.01
 
 	Synopsis->new( satelites => 5 );
 
-	$synopsis->mental->{oistins};
+	$synopsis->mind->{oistins};
+
+=cut
+
+=head1 keywords
+
+=cut
+
+=head2 has
+
+=cut
+
+=head2 ro
+
+=cut
+
+=head2 rw
+
+=cut
+
+=head2 isa
+
+=cut
+
+=head3 any
+
+=cut
+
+=head3 string
+
+=cut
+
+=head3 scalarref
+
+=cut
+
+=head3 integer
+
+=cut
+
+=head3 float
+
+=cut
+
+=head3 boolean
+
+=cut
+
+=head3 ordered_hash
+
+=cut
+
+=head3 hash
+
+=cut
+
+=head3 array
+
+=cut
+
+=head3 object
+
+=cut
+
+=head3 fh
+
+=cut
+
+=head2 isa
+
+=cut
+
+=head2 default
+
+=cut
+
+=head2 coerce
+
+=cut
+
+=head2 required
+
+=cut
+
+=head2 trigger
+
+=cut
+
+=head2 extends
+
+=cut
+
+=head2 requires_has
+
+=cut
+
+=head2 requires_sub
+
+=cut
 
 =head1 AUTHOR
 

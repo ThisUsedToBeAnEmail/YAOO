@@ -3,3 +3,10 @@ Revision history for YAOO
 0.01    Date/time
         First version, released on an unsuspecting world.
 
+0.03    2022-02-13
+	Third times a charm
+
+0.04    2022-02-14
+	- Fix booleans
+	- Add an extends keyword for inheritance
+	- Add require_has and require_sub keywords

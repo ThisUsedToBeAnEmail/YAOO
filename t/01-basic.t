@@ -16,6 +16,8 @@ use warnings;
 
 	has three => rw, isa(integer);	
 
+	has four => rw, isa(boolean);
+
 	has five => rw, isa(ordered_hash(
 		first => 1,
 		second => 2,
@@ -23,7 +25,7 @@ use warnings;
 	));
 }
 
-my $test = Test->new(three => 3, four => 4);
+my $test = Test->new(three => 3, four => 1);
 
 is_deeply($test->one->{e}, [qw/1 2 3/]);
 

@@ -19,6 +19,7 @@ my %WriteMakefileArgs = (
     PREREQ_PM => {
 	'Tie::IxHash' => 0,
 	'Carp' => 0,
+    	'Blessed::Merge' => 0,
     },
     dist  => { COMPRESS => 'gzip -9f', SUFFIX => 'gz', },
     clean => { FILES => 'YAOO-*' },
