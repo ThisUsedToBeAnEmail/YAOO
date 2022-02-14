@@ -4,7 +4,7 @@ use warnings;
 use Carp qw/croak/; use Tie::IxHash;
 use feature qw/state/;
 use Blessed::Merge;
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 our (%TYPES, %object);
 
@@ -25,7 +25,7 @@ sub import {
 	for my $key (qw/isa default coerce required trigger/) {
 		make_keyword($called, $key, sub {
 			my (@value) = @_;
-			return $key => @value;
+			return $key => scalar @value > 1 ? @value : $value[0];
 		});
 	}
 
@@ -46,32 +46,36 @@ sub import {
 	make_keyword($called, 'auto_build', sub { $object{$called}{auto_build} = 1; });
 
 	make_keyword($called, 'extends', sub {
-		my ($args) = @_;
+		my (@args) = @_;
 		my $extend = caller();
-		my $bm = Blessed::Merge->new(blessed => 0, same => 0);
-		$object{$extend} = $bm->merge($object{$extend}, $object{$called});
-  		push @{*{\*{"${extend}::ISA"}}{ARRAY}}, $called;
-		for my $name (keys %{$object{$extend}{has}}) {
-			make_keyword($extend, $name, sub {
-				my ($self, $value) = @_;
-				if ($value && (
-					$object{$extend}{has}{$name}->{is} eq 'rw'
-						|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
-				)) {
-					$value = $object{$extend}{has}{$name}->{coerce}($value, $name)
-						if ($object{$extend}{has}{$name}->{coerce});
-					$object{$extend}{has}{$name}->{required}($value, $name)
-						if ($object{$extend}{$name}->{required});
-					$value = $object{$extend}{has}{$name}->{isa}($value, $name);
-					$self->{$name} = $value;
-					$object{$extend}{has}{$name}->{trigger}($value, $name)
-						if ($object{$extend}{has}{$name}->{trigger});
-				}
-				$self->{$name};
-			});
-		}
-		for my $name (keys %{$object{$extend}{method}}) {
-			make_keyword($extend, $name, $object{$called}{method}{$name});
+  		for my $inherit (@args) {
+			load($inherit);
+			push @{*{\*{"${extend}::ISA"}}{ARRAY}}, $inherit;
+			return unless $object{$inherit};
+			my $bm = Blessed::Merge->new(blessed => 0, same => 0);
+			$object{$extend} = $bm->merge($object{$extend}, $object{$inherit});
+			for my $name (keys %{$object{$extend}{has}}) {
+				make_keyword($extend, $name, sub {
+					my ($self, $value) = @_;
+					if ($value && (
+						$object{$extend}{has}{$name}->{is} eq 'rw'
+							|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
+					)) {
+						$value = $object{$extend}{has}{$name}->{coerce}($self, $value, $name)
+							if ($object{$extend}{has}{$name}->{coerce});
+						$object{$extend}{has}{$name}->{required}($value, $name)
+							if ($object{$extend}{$name}->{required});
+						$value = $object{$extend}{has}{$name}->{isa}($value, $name);
+						$self->{$name} = $value;
+						$object{$extend}{has}{$name}->{trigger}($self, $value, $name)
+							if ($object{$extend}{has}{$name}->{trigger});
+					}
+					$self->{$name};
+				});
+			}
+			for my $name (keys %{$object{$extend}{method}}) {
+				make_keyword($extend, $name, $object{$called}{method}{$name});
+			}
 		}
 	});
 
@@ -133,7 +137,7 @@ sub import {
 
 		make_keyword($called, $name, sub {
 			my ($self, $value) = @_;
-			if ($value && (
+			if (defined $value && (
 				$object{$called}{has}{$name}->{is} eq 'rw'
 					|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
 			)) {
@@ -198,6 +202,7 @@ sub set_defaults {
 
 sub auto_build {
 	my ($self, %build) = (shift, scalar @_ == 1 ? %{ $_[0] } : @_);
+
 	for my $key (keys %build) {
 		$self->$key($build{$key}) if $self->can($key);
 	}
@@ -211,7 +216,7 @@ sub required {
 	}
 }
 
-sub any { $_[1] }
+sub any { $_[0] }
 
 sub build_string { "" }
 
@@ -313,14 +318,13 @@ sub object {
 			$name;
 	}
 	return $value;
-
 }
 
 sub deep_clone {
 	my ($data) = @_;
 	my $ref = ref $data;
 	if (!$ref) { return $data; }
-	elsif ($ref eq 'SCALAR') { return \deep_clone($$data); }
+	elsif ($ref eq 'SCALAR') { my $r = deep_clone($$data); return \$r; }
 	elsif ($ref eq 'ARRAY') { return [ map { deep_clone($_) } @{ $data } ]; }
 	elsif ($ref eq 'HASH') { return { map +( $_ => deep_clone($data->{$_}) ), keys %{ $data } }; }
 	return $data;
@@ -330,8 +334,17 @@ sub deep_clone_ordered_hash {
 	my (@hash) = scalar @_ == 1 ? %{ $_[0] } : @_;
 	my %hash = ();
         tie(%hash, 'Tie::IxHash');
-	$hash{shift @hash} = deep_clone(shift @hash) while @hash;
+	while (@hash) {
+		my ($key, $value) = (shift @hash, shift @hash);
+		$hash{$key} = deep_clone($value)
+	}
 	return \%hash;
+}
+
+sub load {
+	my ($module) = shift;
+	$module =~ s/\:\:/\//g;
+	require $module . '.pm';
 }
 
 1
@@ -344,7 +357,7 @@ YAOO - Yet Another Object Orientation
 
 =head1 VERSION
 
-Version 0.04
+Version 0.05
 
 =cut
 
@@ -368,11 +381,24 @@ Version 0.04
 		oistins => 3
 	));
 
+	1;
+
 	...
 
 	Synopsis->new( satelites => 5 );
 
 	$synopsis->mind->{oistins};
+
+
+	...
+
+	package Life;
+
+	extends 'Synopsis';
+
+	requires_has qw/moon stars satellites mind/
+
+	1;
 
 =cut
 

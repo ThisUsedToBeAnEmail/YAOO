@@ -10,3 +10,10 @@ Revision history for YAOO
 	- Fix booleans
 	- Add an extends keyword for inheritance
 	- Add require_has and require_sub keywords
+
+0.05    2022-02-14
+	Various Fixes including:
+	- inheritance
+	- any isa type
+	- passing $self into coerce and trigger
+	- ordered hash cloning in the correct order
