@@ -17,3 +17,6 @@ Revision history for YAOO
 	- any isa type
 	- passing $self into coerce and trigger
 	- ordered hash cloning in the correct order
+
+0.06    2022-02-15
+	- Add support for defining multiple attributes/accessors via [qw/one two three/] and {one => {}, two => {}}

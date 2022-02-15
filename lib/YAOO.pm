@@ -4,7 +4,7 @@ use warnings;
 use Carp qw/croak/; use Tie::IxHash;
 use feature qw/state/;
 use Blessed::Merge;
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 our (%TYPES, %object);
 
@@ -104,55 +104,7 @@ sub import {
 		make_keyword($called, $name, $sub);
 	});
 
-	make_keyword($called, 'has', sub {
-		my ($name, @attrs) = @_;
-
-		if ( $object{$called}{has}{$name} ) {
-			croak sprintf "%s attribute already defined for %s object.", $name, $called;
-		}
-
-		if ( scalar @attrs % 2 ) {
-			croak sprintf "Invalid attribute definition odd number of key/value pairs (%s) passed with %s in %s object", scalar @attrs, $name, $called;
-		}
-
-		$object{$called}{has}{$name} = {@attrs};
-
-		$object{$called}{has}{$name}{is} = 'rw'
-			if (! $object{$called}{has}{$name}{is});
-
-		$object{$called}{has}{$name}{isa} = $TYPES{all}
-			if (not defined $object{$called}{has}{$name}{isa});
-
-		if ($object{$called}{has}{$name}{default}) {
-			if ($object{$called}{has}{$name}{default} =~ m/^1$/) {
-				$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{build_default}();
-			} elsif (ref $object{$called}{has}{$name}{default} eq 'CODE') {
-				$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{default}();
-			} else {
-				$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{type} eq 'ordered_hash'
-					? deep_clone_ordered_hash($object{$called}{has}{$name}{default})
-					: deep_clone($object{$called}{has}{$name}{default});
-			}
-		}
-
-		make_keyword($called, $name, sub {
-			my ($self, $value) = @_;
-			if (defined $value && (
-				$object{$called}{has}{$name}->{is} eq 'rw'
-					|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
-			)) {
-				$value = $object{$called}{has}{$name}->{coerce}($value, $name)
-					if ($object{$called}{has}{$name}->{coerce});
-				$object{$called}{has}{$name}{required}($value, $name)
-					if ($object{$called}{$name}->{required});
-				$value = $object{$called}{has}{$name}{isa}($value, $name);
-				$self->{$name} = $value;
-				$object{$called}{has}{$name}{trigger}($value, $name)
-					if ($object{$called}{has}{$name}->{trigger});
-			}
-			$self->{$name};
-		});
-	});
+	make_keyword($called, 'has', sub { build_attribute($called, @_) });
 
 	make_keyword($called, "new", sub {
 		my ($pkg) = shift;
@@ -164,6 +116,63 @@ sub import {
 		auto_build($self, @_) if ($object{$called}{auto_build});
 		$self->build(@_) if ($self->can('build'));
 		return $self;
+	});
+}
+
+sub build_attribute {
+	my ($called, $name, @attrs) = @_;
+
+	my $ref = ref $name || 'STRING';
+	if ($ref eq 'ARRAY') {
+		build_attribute($called, $_, @attrs) for @{ $name };
+	} elsif ($ref eq 'HASH') {
+		build_attribute($called, $_, %{ $name->{$_} }) for keys %{ $name };
+	}
+
+	if ( $object{$called}{has}{$name} ) {
+		croak sprintf "%s attribute already defined for %s object.", $name, $called;
+	}
+
+	if ( scalar @attrs % 2 ) {
+		croak sprintf "Invalid attribute definition odd number of key/value pairs (%s) passed with %s in %s object", scalar @attrs, $name, $called;
+	}
+
+	$object{$called}{has}{$name} = {@attrs};
+
+	$object{$called}{has}{$name}{is} = 'rw'
+		if (! $object{$called}{has}{$name}{is});
+
+	$object{$called}{has}{$name}{isa} = $TYPES{all}
+		if (not defined $object{$called}{has}{$name}{isa});
+
+	if ($object{$called}{has}{$name}{default}) {
+		if ($object{$called}{has}{$name}{default} =~ m/^1$/) {
+			$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{build_default}();
+		} elsif (ref $object{$called}{has}{$name}{default} eq 'CODE') {
+			$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{default}();
+		} else {
+			$object{$called}{has}{$name}{value} = $object{$called}{has}{$name}{type} eq 'ordered_hash'
+				? deep_clone_ordered_hash($object{$called}{has}{$name}{default})
+				: deep_clone($object{$called}{has}{$name}{default});
+		}
+	}
+
+	make_keyword($called, $name, sub {
+		my ($self, $value) = @_;
+		if (defined $value && (
+			$object{$called}{has}{$name}->{is} eq 'rw'
+				|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
+		)) {
+			$value = $object{$called}{has}{$name}->{coerce}($self, $value, $name)
+				if ($object{$called}{has}{$name}->{coerce});
+			$object{$called}{has}{$name}{required}($value, $name)
+				if ($object{$called}{$name}->{required});
+			$value = $object{$called}{has}{$name}{isa}($value, $name);
+			$self->{$name} = $value;
+			$object{$called}{has}{$name}{trigger}($self, $value, $name)
+				if ($object{$called}{has}{$name}->{trigger});
+		}
+		$self->{$name};
 	});
 }
 
@@ -357,7 +366,7 @@ YAOO - Yet Another Object Orientation
 
 =head1 VERSION
 
-Version 0.05
+Version 0.06
 
 =cut
 
@@ -381,6 +390,8 @@ Version 0.05
 		oistins => 3
 	));
 
+	has [qw/look up/] => isa(string);
+
 	1;
 
 	...
@@ -388,7 +399,6 @@ Version 0.05
 	Synopsis->new( satelites => 5 );
 
 	$synopsis->mind->{oistins};
-
 
 	...
 
