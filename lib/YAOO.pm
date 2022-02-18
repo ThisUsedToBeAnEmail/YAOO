@@ -4,13 +4,14 @@ use warnings;
 use Carp qw/croak/; use Tie::IxHash;
 use feature qw/state/;
 use Blessed::Merge;
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
-our (%TYPES, %object);
+our (%TYPES, %object, $LAST);
 
 sub make_keyword {
 	my ($called, $key, $cb) = @_;
 	*{"${called}::$key"} = $cb;
+	$LAST = 10000000000000000000;
 }
 
 sub import {
@@ -18,14 +19,17 @@ sub import {
 
 	my $called = caller();
 
+	strict->import();
+	warnings->import();
+
 	for my $is (qw/ro rw/) {
 		make_keyword($called, $is, sub { is => $is });
 	}
 
-	for my $key (qw/isa default coerce required trigger/) {
+	for my $key (qw/isa default coerce required trigger lazy delay build_order/) {
 		make_keyword($called, $key, sub {
 			my (@value) = @_;
-			return $key => scalar @value > 1 ? @value : $value[0];
+			return $key => scalar @value > 1 ? @value : ($value[0] || 1);
 		});
 	}
 
@@ -63,7 +67,7 @@ sub import {
 					)) {
 						$value = $object{$extend}{has}{$name}->{coerce}($self, $value, $name)
 							if ($object{$extend}{has}{$name}->{coerce});
-						$object{$extend}{has}{$name}->{required}($value, $name)
+						$object{$extend}{has}{$name}->{required}($self, $value, $name)
 							if ($object{$extend}{$name}->{required});
 						$value = $object{$extend}{has}{$name}->{isa}($value, $name);
 						$self->{$name} = $value;
@@ -112,9 +116,11 @@ sub import {
 		require_has($called);
 		require_sub($self, $called);
 		require_method($called);
+		auto_ld($self, $called, 'lazy') if ($object{$called}{lazy});
 		set_defaults($self, $called);
-		auto_build($self, @_) if ($object{$called}{auto_build});
+		auto_build($self, $called, @_) if ($object{$called}{auto_build});
 		$self->build(@_) if ($self->can('build'));
+		auto_ld($self, $called, 'delay') if ($object{$called}{delay});
 		return $self;
 	});
 }
@@ -123,13 +129,19 @@ sub build_attribute {
 	my ($called, $name, @attrs) = @_;
 
 	my $ref = ref $name || 'STRING';
+
+	my $attribute_extend;
+	if ($name =~ s/^_([a-zA-Z].*)/$1/) {
+		$attribute_extend = 1;
+	}
+
 	if ($ref eq 'ARRAY') {
 		build_attribute($called, $_, @attrs) for @{ $name };
 	} elsif ($ref eq 'HASH') {
 		build_attribute($called, $_, %{ $name->{$_} }) for keys %{ $name };
 	}
 
-	if ( $object{$called}{has}{$name} ) {
+	if ( !$attribute_extend && $object{$called}{has}{$name} ) {
 		croak sprintf "%s attribute already defined for %s object.", $name, $called;
 	}
 
@@ -157,6 +169,18 @@ sub build_attribute {
 		}
 	}
 
+	if ($object{$called}{has}{$name}{required}) {
+		$object{$called}{has}{$name}{required} = \&required;
+	}
+
+	if ($object{$called}{has}{$name}{lazy}) {
+		push @{$object{$called}{lazy}}, $name;
+	}
+
+	if ($object{$called}{has}{$name}{delay}) {
+		push @{$object{$called}{delay}}, $name;
+	}
+
 	make_keyword($called, $name, sub {
 		my ($self, $value) = @_;
 		if (defined $value && (
@@ -165,7 +189,7 @@ sub build_attribute {
 		)) {
 			$value = $object{$called}{has}{$name}->{coerce}($self, $value, $name)
 				if ($object{$called}{has}{$name}->{coerce});
-			$object{$called}{has}{$name}{required}($value, $name)
+			$object{$called}{has}{$name}{required}($self, $value, $name)
 				if ($object{$called}{$name}->{required});
 			$value = $object{$called}{has}{$name}{isa}($value, $name);
 			$self->{$name} = $value;
@@ -173,7 +197,7 @@ sub build_attribute {
 				if ($object{$called}{has}{$name}->{trigger});
 		}
 		$self->{$name};
-	});
+	}) unless $attribute_extend;
 }
 
 sub require_has {
@@ -202,19 +226,33 @@ sub require_method {
 
 sub set_defaults {
 	my ($self, $called) = @_;
-	(defined $object{$called}{has}{$_}{value} && $self->$_($object{$called}{has}{$_}{type} eq 'ordered_hash'
-		? deep_clone_ordered_hash($object{$called}{has}{$_}{value})
-		: deep_clone($object{$called}{has}{$_}{value})
-	)) for keys %{$object{$called}{has}};
+	map {
+		defined $object{$called}{has}{$_}{value} && $self->$_($object{$called}{has}{$_}{type} eq 'ordered_hash'
+			? deep_clone_ordered_hash($object{$called}{has}{$_}{value})
+			: deep_clone($object{$called}{has}{$_}{value}))
+	} sort { ($object{$called}{has}{$a}{build_order} || $LAST) <=> ($object{$called}{has}{$b}{build_order} || $LAST) }
+		keys %{$object{$called}{has}};
 	return $self;
 }
 
 sub auto_build {
-	my ($self, %build) = (shift, scalar @_ == 1 ? %{ $_[0] } : @_);
+	my ($self, $called, %build) = (shift, shift, scalar @_ == 1 ? %{ $_[0] } : @_);
+	map {
+		if ($self->can($_)) {
+			$self->$_($build{$_});
+		}
+	} sort { ($object{$called}{has}{$a}{build_order} || $LAST) <=> ($object{$called}{has}{$b}{build_order} || $LAST) }
+		keys %build;
+}
 
-	for my $key (keys %build) {
-		$self->$key($build{$key}) if $self->can($key);
-	}
+sub auto_ld {
+	my ($self, $called, $type) = @_;
+	map {
+		my $cb_value = ref $object{$called}{has}{$_}{$type} || $object{$called}{has}{$_}{$type} !~ m/^1$/ ? $object{$called}{has}{$_}{$type} : $object{$called}{has}{$_}{build_default}->();
+		$self->$_($cb_value);
+	} sort {
+		($object{$called}{has}{$a}{build_order} || $LAST) <=> ($object{$called}{has}{$b}{build_order} || $LAST)
+	} @{ $object{$called}{$type} };
 }
 
 sub required {
@@ -271,7 +309,7 @@ sub scalarref {
 	return $value;
 }
 
-sub build_boolean { \0 }
+sub build_boolean { \1 }
 
 sub boolean {
 	my ($value, $name) = @_;
@@ -320,6 +358,8 @@ sub fh {
 	return $value;
 }
 
+sub build_object { { } }
+
 sub object {
 	my ($value, $name) = @_;
 	if ( ! ref $value || ref $value !~ m/SCALAR|ARRAY|HASH|GLOB/) {
@@ -366,7 +406,7 @@ YAOO - Yet Another Object Orientation
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
@@ -378,25 +418,28 @@ Version 0.06
 
 	auto_build;
 
-	has moon => ro, isa(hash(a => "b", c => "d", e => [qw/1 2 3/], f => { 1 => { 2 => { 3 => 4 } } }));
+	has moon => ro, isa(hash(a => "b", c => "d", e => [qw/1 2 3/], f => { 1 => { 2 => { 3 => 4 } } })), lazy, build_order(3);
 
-	has stars => rw, isa(array(qw/a b c d/));
+	has stars => rw, isa(array(qw/a b c d/)), lazy, build_order(3);
 
-	has satellites => rw, isa(integer);
+	has satellites => rw, isa(integer), lazy, build_order(2);
 
 	has mind => rw, isa(ordered_hash(
 		chang => 1,
 		zante => 2,
 		oistins => 3
-	));
+	)), lazy, build_order(1);
 
-	has [qw/look up/] => isa(string);
+	has [qw/look up/] => isa(string), delay, coerce(sub {
+		my $followed = [qw/moon starts satellites/]->[int(rand(3))];
+		$_[0]->$followed;
+	});
 
 	1;
 
 	...
 
-	Synopsis->new( satelites => 5 );
+	Synopsis->new( satellites => 5 );
 
 	$synopsis->mind->{oistins};
 
@@ -493,6 +536,18 @@ Version 0.06
 =cut
 
 =head2 trigger
+
+=cut
+
+=head2 lazy
+
+=cut
+
+=head2 delay
+
+=cut
+
+=head2 build_order
 
 =cut
 

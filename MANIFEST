@@ -9,6 +9,7 @@ t/01-basic.t
 t/02-synopsis.t
 t/03-inherit.t
 t/04-require.t
+t/05-attributes.t
 t/lib/Okay.pm
 t/lib/Test.pm
 t/manifest.t
