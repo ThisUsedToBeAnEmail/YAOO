@@ -4,7 +4,7 @@ use warnings;
 use Carp qw/croak/; use Tie::IxHash;
 use feature qw/state/;
 use Blessed::Merge;
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 
 our (%TYPES, %object, $LAST);
 
@@ -183,18 +183,22 @@ sub build_attribute {
 
 	make_keyword($called, $name, sub {
 		my ($self, $value) = @_;
-		if (defined $value && (
+		if (@_ > 1 && (
 			$object{$called}{has}{$name}->{is} eq 'rw'
 				|| [split '::', [caller(1)]->[3]]->[-1] =~ m/^new|build|set_defaults|auto_build$/
 		)) {
-			$value = $object{$called}{has}{$name}->{coerce}($self, $value, $name)
-				if ($object{$called}{has}{$name}->{coerce});
-			$object{$called}{has}{$name}{required}($self, $value, $name)
-				if ($object{$called}{$name}->{required});
-			$value = $object{$called}{has}{$name}{isa}($value, $name);
-			$self->{$name} = $value;
-			$object{$called}{has}{$name}{trigger}($self, $value, $name)
-				if ($object{$called}{has}{$name}->{trigger});
+			if (defined $value) {
+				$value = $object{$called}{has}{$name}->{coerce}($self, $value, $name)
+					if ($object{$called}{has}{$name}->{coerce});
+				$object{$called}{has}{$name}{required}($self, $value, $name)
+					if ($object{$called}{$name}->{required});
+				$value = $object{$called}{has}{$name}{isa}($value, $name);
+				$self->{$name} = $value;
+				$object{$called}{has}{$name}{trigger}($self, $value, $name)
+					if ($object{$called}{has}{$name}->{trigger});
+			} else {
+				$self->{$name} = undef;
+			}
 		}
 		$self->{$name};
 	}) unless $attribute_extend;
@@ -406,7 +410,7 @@ YAOO - Yet Another Object Orientation
 
 =head1 VERSION
 
-Version 0.07
+Version 0.08
 
 =cut
 
@@ -457,109 +461,213 @@ Version 0.07
 
 =head1 keywords
 
+The following keywords are exported automatically when you declare the use of YAOO.
+
 =cut
 
 =head2 has
+
+Declare an attribute/accessor.
+
+	has one => ro, isa(object);
 
 =cut
 
 =head2 ro
 
+Set the attribute to read only, so it can only be set on instantiation of the YAOO object.
+
+	has two => ro;
+
 =cut
 
 =head2 rw
 
+Set the attribute tp read write, so it can be set at any time. This is the default if you do not provide ro or rw when declaring your attribute.
+
+	has three => rw;
+
 =cut
 
 =head2 isa
+
+Declare a type for the attribute, see the types below for all the current valid options.
+
+	has four => isa(any($default_value));
 
 =cut
 
 =head3 any
 
+Allow any value to be set for the attribute.
+
+	has five => isa(any);
+
 =cut
 
 =head3 string
+
+Allow only string values to be set for the attribute.
+
+	has six => isa(string);
 
 =cut
 
 =head3 scalarref
 
+Allow only scalar references to be set for the attribute.
+
+	has seven => isa(scalarref);
+
 =cut
 
 =head3 integer
+
+Allow only integer values to be be set for the attribute.
+
+	has eight => isa(integer(10));
 
 =cut
 
 =head3 float
 
+Allow only floats to be set for the attribute.
+
+	has nine => isa(float(211.11));
+
 =cut
 
 =head3 boolean
+
+Allow only boolean values to be set for the attribute.
+
+	has ten => isa(boolean(\1));
 
 =cut
 
 =head3 ordered_hash
 
+Allow only hash values to be set for the attribute, this will also assist with declaring a ordered hash which has a predicatable order for the keys based upon how it is defined.
+
+	has eleven => isa(ordered_hash( one => 1, two => 2, three => 3 ));
+
 =cut
 
 =head3 hash
+
+Allow only hash values to be set for the attribute.
+
+	has twelve => isa(hash);
 
 =cut
 
 =head3 array
 
+Allow only array values to be set for the attribute.
+
+	has thirteen => isa(array);
+
 =cut
 
 =head3 object
+
+Allow any object to be set for the attribute.
+
+	has fourteen => isa(object);
 
 =cut
 
 =head3 fh
 
-=cut
+Allow any file handle to be set for the attribute
 
-=head2 isa
+	has fifthteen => isa(fh);
 
 =cut
 
 =head2 default
 
+Set the default value for the attribute, this can also be done by passing in the isa type.
+
+	has sixteen => isa(string), default('abc');
+
 =cut
 
 =head2 coerce
+
+Define a coerce sub routine so that you can manipulate the passed value when ever it is set.
+
+	has seventeen => isa(object(1)), coerce(sub {
+		JSON->new();
+	});
 
 =cut
 
 =head2 required
 
+Define a required sub routing so that you can dynamically check for required keys/values for the given attribute.
+
+	has eighteen => isa(hash) required(sub {
+		die "the world is a terrible place" if not $_[1]->{honesty};
+	});
+
 =cut
 
 =head2 trigger
+
+Define a trigger sub which is called after the attribute has been set..
+
+	has nineteen => isa(hash) trigger(sub {
+		$_[0]->no_consent;
+	});
 
 =cut
 
 =head2 lazy
 
+Make the attribute lazy so that it is instantiated early.
+
+	has twenty => isa(string('Foo::Bar')), lazy;
+
 =cut
 
 =head2 delay
+
+Make the attribute delayed so that it is instantiated late.
+
+	has twenty_one => isa(object), delay, coerce(sub { $_[0]->twenty->new });
 
 =cut
 
 =head2 build_order
 
+Configure a build order for the attributes, this allows you to control the order in which they are 'set'.
+
+	has twenty_two => isa(string), build_order(18);
+
 =cut
 
 =head2 extends
+
+Declare inheritance.
+
+	extends 'Moonlight';
 
 =cut
 
 =head2 requires_has
 
+Decalre attributes that must exist in the inheritance of the object.
+
+	require_has qw/one two three/
+
 =cut
 
 =head2 requires_sub
+
+Declare sub routines/methods that must exist in the inheritance of the object.
+
+	require_sub qw/transparency dishonesty/
 
 =cut
 

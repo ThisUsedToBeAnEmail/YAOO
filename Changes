@@ -25,3 +25,6 @@ Revision history for YAOO
 	- Add delay, lazy and build_order attribute options
 	- Automagically import strict and warnings
 	- Add mechanism to extend attributes (_attribute).
+
+0.08    2022-02-20
+	- Allow an attribute/accessor to be set as undef (cleared)

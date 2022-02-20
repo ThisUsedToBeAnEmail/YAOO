@@ -26,9 +26,10 @@ ok(my $test = Test->new(
 	five => { a => "b" },
 ));
 
-is($test->{one}, 1);
-is($test->{four}, 'fourth');
-is($test->{six}, 6);
+is($test->one, 1);
+is($test->four, 'fourth');
+is($test->six, 6);
+is($test->one(undef), undef);
 
 
 done_testing();
